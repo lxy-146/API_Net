@@ -9,8 +9,8 @@ import torch.utils.data
 import torchvision.transforms as transforms
 import numpy as np
 from models import API_Net 
-from datasets import RandomDataset, BatchDataset, BalancedBatchSampler
-from utils import accuracy, AverageMeter, save_checkpoint
+from datasets import RandomDataset, BatchDataset, BalancedBatchSampler, MVIDataset
+from utils import accuracy, AverageMeter, save_checkpoint, all_accuracy
 
 
 
@@ -38,13 +38,13 @@ parser.add_argument('--print-freq', '-p', default=1, type=int,
                     metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--evaluate-freq', default=10, type=int,
                     help='the evaluation frequence')
-parser.add_argument('--resume', default='./checkpoint.pth.tar', type=str, metavar='PATH',
+parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
-parser.add_argument('--n_classes', default=30, type=int,
+parser.add_argument('--n_classes', default=3, type=int,
                     help='the number of classes')
 parser.add_argument('--n_samples', default=4, type=int,
                     help='the number of samples per class')
@@ -92,15 +92,17 @@ def main():
 
     cudnn.benchmark = True
     # Data loading code
-    train_dataset = BatchDataset(transform=transforms.Compose([
-                                            transforms.Resize([512,512]),
-                                            transforms.RandomCrop([448,448]),
-                                            transforms.RandomHorizontalFlip(),
-                                            transforms.ToTensor(),
-                                            transforms.Normalize(
-                                                mean=(0.485, 0.456, 0.406),
-                                                std=(0.229, 0.224, 0.225)
-                                            )]))
+    transform_=transforms.Compose([
+                                    transforms.Resize([512,512]),
+                                    transforms.RandomCrop([448,448]),
+                                    transforms.RandomHorizontalFlip(),
+                                    transforms.ToTensor(),
+                                    transforms.Normalize(
+                                        mean=(0.485, 0.456, 0.406),
+                                        std=(0.229, 0.224, 0.225)
+                                    )])
+    train_dataset = MVIDataset('train', 0, transform_)
+    # train_dataset = BatchDataset(transform=transform_)
                                             
     train_sampler = BalancedBatchSampler(train_dataset, args.n_classes, args.n_samples)
     train_loader = torch.utils.data.DataLoader(
@@ -148,8 +150,8 @@ def train(train_loader, model, criterion, optimizer_conv,scheduler_conv, optimiz
         labels1 = labels1.to(device)
         labels2 = labels2.to(device)
 
-        self_logits = torch.zeros(2*batch_size, 200).to(device)
-        other_logits= torch.zeros(2*batch_size, 200).to(device)
+        self_logits = torch.zeros(2*batch_size, 3).to(device)
+        other_logits= torch.zeros(2*batch_size, 3).to(device)
         self_logits[:batch_size] = logit1_self
         self_logits[batch_size:] = logit2_self
         other_logits[:batch_size] = logit1_other
@@ -171,7 +173,7 @@ def train(train_loader, model, criterion, optimizer_conv,scheduler_conv, optimiz
 
         # measure accuracy and record loss
         prec1 = accuracy(logits, targets, 1)
-        prec5 = accuracy(logits, targets, 5)
+        prec5 = all_accuracy(logits, targets)
         losses.update(loss.item(), 2*batch_size)
         softmax_losses.update(softmax_loss.item(), 4*batch_size)
         rank_losses.update(rank_loss.item(), 2*batch_size)
@@ -201,20 +203,22 @@ def train(train_loader, model, criterion, optimizer_conv,scheduler_conv, optimiz
                   'SoftmaxLoss {softmax_loss.val:.4f} ({softmax_loss.avg:.4f})\t'
                   'RankLoss {rank_loss.val:.4f} ({rank_loss.avg:.4f})\t'
                   'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                  'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
+                  'Prec@3 {top5.val:.3f} ({top5.avg:.3f})'.format(
                    epoch, i, len(train_loader), batch_time=batch_time,
                    data_time=data_time, loss=losses, softmax_loss=softmax_losses, rank_loss=rank_losses,
                    top1=top1, top5=top5, step=step, time= time.asctime(time.localtime(time.time()))))
 
         if i== len(train_loader) - 1:
-            val_dataset = RandomDataset(transform=transforms.Compose([
-                transforms.Resize([512,512]),
-                transforms.CenterCrop([448,448]),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225)
-                )]))
+            transform_ = transforms.Compose([
+                                            transforms.Resize([512,512]),
+                                            transforms.CenterCrop([448,448]),
+                                            transforms.ToTensor(),
+                                            transforms.Normalize(
+                                                mean=(0.485, 0.456, 0.406),
+                                                std=(0.229, 0.224, 0.225)
+                                            )])
+            val_dataset = MVIDataset('test', 0, transform_)
+            # val_dataset = RandomDataset(transform=transform_)
             val_loader = torch.utils.data.DataLoader(
                 val_dataset, batch_size=args.batch_size, shuffle=False,
                 num_workers=args.workers, pin_memory=True)
@@ -243,7 +247,7 @@ def validate(val_loader, model, criterion):
     batch_time = AverageMeter()
     softmax_losses = AverageMeter()
     top1 = AverageMeter()
-    top5 = AverageMeter()
+    top3 = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
@@ -261,10 +265,10 @@ def validate(val_loader, model, criterion):
 
 
             prec1= accuracy(logits, target_var, 1)
-            prec5 = accuracy(logits, target_var, 5)
+            prec3 = all_accuracy(logits, target_var)
             softmax_losses.update(softmax_loss.item(), logits.size(0))
             top1.update(prec1, logits.size(0))
-            top5.update(prec5, logits.size(0))
+            top3.update(prec3, logits.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -277,10 +281,10 @@ def validate(val_loader, model, criterion):
                         'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                         'SoftmaxLoss {softmax_loss.val:.4f} ({softmax_loss.avg:.4f})\t'
                         'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                        'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
+                        'Prec@3 {top3.val:.3f} ({top3.avg:.3f})'.format(
                         i, len(val_loader), batch_time=batch_time, softmax_loss=softmax_losses,
-                        top1=top1, top5=top5, time=time.asctime(time.localtime(time.time()))))
-        print(' * Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f}'.format(top1=top1, top5=top5))
+                        top1=top1, top3=top3, time=time.asctime(time.localtime(time.time()))))
+        print(' * Prec@1 {top1.avg:.3f} Prec@3 {top3.avg:.3f}'.format(top1=top1, top3=top3))
 
     return top1.avg
 

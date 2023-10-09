@@ -1,4 +1,7 @@
 import torch
+import os
+import json
+
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import BatchSampler
 from PIL import  Image
@@ -64,6 +67,44 @@ class BatchDataset(Dataset):
 
     def __len__(self):
         return len(self.imglist)
+
+class MVIDataset(Dataset):
+    def __init__(self, kind, fold, transform):
+        self.kind = kind
+        self.fold = fold
+        self.transform = transform
+        self._get_data()
+        self.lables = np.array(self.labels)
+        self.labels = torch.LongTensor(self.labels)
+        # print(self.labels)
+        # assert 0
+    def _get_data(self):
+        json_file = 'crop_' + self.kind + '_fold' + str(self.fold) + '.json'
+        with open(os.path.join('/media/data/ilab/lxy_media/MVI_grading_2023/data/folds', json_file), 'r') as inf:
+            data_dic = json.load(inf)
+        self.labels = list()
+        self.filenames = list()
+        self.subjects = list()
+        self.layers = list()
+        for key, value in data_dic.items():
+            _, classes = key.split('M')
+            for i in range(3):
+                self.layers.append(i)
+                self.labels.append(int(classes))
+                self.filenames.append(value['T1'].split('.')[0])
+                self.subjects.append(key)
+
+    def __getitem__(self, index):
+        file_name= self.filenames[index]
+        label = np.array(self.labels[index]).astype(np.int64)
+        file_name = f'{file_name}_{str(self.layers[index])}.jpg'
+        image = Image.open(os.path.join('/media/data/ilab/lxy_media/MVI_grading_2023/data/crop_img_224', file_name)).convert('RGB')
+        image = self.transform(image)
+        return [image, label]
+    
+    def __len__(self):
+        return len(self.filenames)
+
 
 class BalancedBatchSampler(BatchSampler):
     def __init__(self, dataset, n_classes, n_samples):
